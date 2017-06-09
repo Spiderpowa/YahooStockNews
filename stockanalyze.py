@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import json
+import random
 
 from collections import defaultdict
 
@@ -17,13 +18,15 @@ from sklearn.svm import LinearSVC
 
 sns.set(style='whitegrid')
 
+RANDOM_SEED = 20170609
+MAX_FAIL_ATTEMPT = 100
 path = '2330.json'
+training_ratio = 0.7
+
+random.seed(RANDOM_SEED)
 
 with open(path, encoding='utf-8') as f:
     posts = json.load(f)
-
-words = []
-scores = []
 
 
 def isfloat(value):
@@ -33,24 +36,80 @@ def isfloat(value):
     except ValueError:
         return False
 
-
-for idx, post in enumerate(posts):
+post_words = []
+post_scores = []
+for post in posts:
     d = defaultdict(int)
     content = post['content']
     for w in jieba.cut(content):
         if len(w) > 1 and not isfloat(w):
             d[w] += 1
-    if len(d) > 0:
-        words.append(d)
-        scores.append(post_score(post))
+    post_words.append(d)
+    post_scores.append(post_score(post))
 
-# convert to vectors
+
+def get_vector(index=[]):
+    words = []
+    scores = []
+    if not len(index):
+        index = range(len(posts))
+    for i in index:
+        words.append(post_words[i])
+        scores.append(post_scores[i])
+    return words, scores
+
+
 dvec = DictVectorizer()
 tfidf = TfidfTransformer()
-X = tfidf.fit_transform(dvec.fit_transform(words))
-
 svc = LinearSVC()
-svc.fit(X, scores)
+training_set = int(len(posts) * training_ratio)
+post_index = list(range(len(posts)))
+random.shuffle(post_index)
+# Training
+print("[Training] Start Training...")
+prev_error = training_set
+fail_attempt = 0
+while fail_attempt < MAX_FAIL_ATTEMPT:
+    sub_training_ratio = 0.5
+    sub_training_set = int(training_set * sub_training_ratio)
+    index = post_index[:training_set]
+    random.shuffle(index)
+    words, scores = get_vector(index[:sub_training_set])
+
+    dvec_cur = DictVectorizer()
+    tfidf_cur = TfidfTransformer()
+    X = tfidf_cur.fit_transform(dvec_cur.fit_transform(words))
+    svc_cur = LinearSVC()
+    svc_cur.fit(X, scores)
+
+    # verify
+    words, scores = get_vector(index[sub_training_set:])
+    X2 = tfidf_cur.transform(dvec_cur.transform(words))
+    preds = svc_cur.predict(X2)
+    error = 0
+    for i in range(len(preds)):
+        error += abs(preds[i] - scores[i])
+
+    if error < prev_error:
+        prev_error = error
+        svc = svc_cur
+        dvec = dvec_cur
+        tfidf = tfidf_cur
+        fail_attempt = 0
+        print("[Training] Errors: {}/{}".format(error, len(index)))
+    else:
+        fail_attempt += 1
+print("[Training] Training Finished")
+
+# verify
+words, scores = get_vector(post_index[training_set:])
+X2 = tfidf.transform(dvec.transform(words))
+preds = svc.predict(X2)
+error = 0
+for i in range(len(preds)):
+    error += abs(preds[i] - scores[i])
+
+print("Errors: {}/{}".format(error, len(posts) - training_set))
 
 
 def display_top_features(weights, names, top_n, select=abs):
